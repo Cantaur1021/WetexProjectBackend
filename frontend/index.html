@@ -46,7 +46,7 @@
 
     .question-container{
       position:absolute; left:50%; transform:translateX(-50%);
-    bottom: calc(160px + var(--ui-raise) - var(--ui-nudge-down));
+      bottom: calc(160px + var(--ui-raise) - var(--ui-nudge-down));
       width:85%; text-align:center;
       opacity:0; transition:opacity .35s ease, transform .35s ease;
       pointer-events:auto;
@@ -91,7 +91,7 @@
   <video
     id="bgVideo"
     class="bg-video"
-    src="/static/video/video.webm"  
+    src="/static/video/video.webm"
     muted
     autoplay
     preload="auto"
@@ -129,28 +129,68 @@
     let timers = [];
     let ws, wsReady = false, wsRetryTimer;
 
+    // <<< configure pause duration between loops (in ms)
+    const LOOP_PAUSE_MS = 10000;
+
+    // Internals for loop-with-pause control
+    let loopEndedHandler = null;
+    let loopPauseTimer = null;
+
     function show(el){el.classList.add('active');}
     function hide(el){el.classList.remove('active');}
     function clearTimers(){timers.forEach(t=>clearTimeout(t)); timers=[];}
 
     /* ---------- Video behavior ---------- */
-    function startLoopingVideo(){
+
+    // Clear any custom handlers/timers we attach to the video
+    function clearVideoHandlers(){
+      if (loopEndedHandler && bgVideo) {
+        bgVideo.removeEventListener('ended', loopEndedHandler);
+        loopEndedHandler = null;
+      }
+      if (loopPauseTimer){
+        clearTimeout(loopPauseTimer);
+        loopPauseTimer = null;
+      }
+    }
+
+    // Standby behavior: loop the video, but pause on the last frame for LOOP_PAUSE_MS, then restart
+    function startLoopingWithPause(){
       if (!bgVideo) return;
-      bgVideo.loop = true;
+      clearVideoHandlers();
+      // We need 'ended' to fire, so do NOT set .loop = true
+      bgVideo.loop = false;
       bgVideo.muted = true;
       try { bgVideo.currentTime = 0; } catch {}
+      // Handler runs each time a loop finishes
+      loopEndedHandler = () => {
+        if (appState !== 'welcome') return; // ignore if state changed mid-loop
+        bgVideo.pause(); // hold on final frame
+        loopPauseTimer = setTimeout(() => {
+          if (appState !== 'welcome') return;
+          try { bgVideo.currentTime = 0; } catch {}
+          bgVideo.play().catch(()=>{});
+        }, LOOP_PAUSE_MS);
+      };
+      bgVideo.addEventListener('ended', loopEndedHandler);
       bgVideo.play().catch(()=>{});
     }
+
+    // Play the video once and stop at the last frame (used when entering question)
     function playOnceAndHold(){
       if (!bgVideo) return;
+      clearVideoHandlers(); // <<< important: don't keep standby handler
       bgVideo.loop = false;
       try { bgVideo.currentTime = 0; } catch {}
       const onEnded = () => { bgVideo.pause(); bgVideo.removeEventListener('ended', onEnded); };
       bgVideo.addEventListener('ended', onEnded);
       bgVideo.play().catch(()=>{});
     }
+
+    // Resume smooth looping without pause (used during/after interactions)
     function resumeLoopingVideo(){
       if (!bgVideo) return;
+      clearVideoHandlers(); // <<< switch to normal loop
       bgVideo.loop = true;
       bgVideo.play().catch(()=>{});
     }
@@ -161,13 +201,15 @@
       appState = 'welcome';
       hide(messageDisplay);
       hide(chocoContainer);
-      startLoopingVideo();
+      startLoopingWithPause(); // <<< standby behavior with pause
     }
+
     function proceedToChocolateQuestion(){
       playOnceAndHold();
       hide(messageDisplay);
       setTimeout(()=>{ show(chocoContainer); appState='choco'; }, 200);
     }
+
     function handleChocolateYes(){
       wsSend({ type:'YesChocolate' });
       hide(chocoContainer);
@@ -184,6 +226,7 @@
         }, 3000));
       }, 10000));
     }
+
     function handleChocolateNo(){
       wsSend({ type:'NoChocolate' });
       hide(chocoContainer);

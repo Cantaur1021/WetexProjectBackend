@@ -14,6 +14,15 @@ import subprocess
 from pathlib import Path
 import webbrowser
 
+# GPIO imports - handle gracefully if not on Raspberry Pi
+try:
+    import lgpio
+    GPIO_AVAILABLE = True
+    GPIO_HANDLE = None  # Will store the chip handle
+except ImportError:
+    GPIO_AVAILABLE = False
+    print("[GPIO] lgpio not available - GPIO functionality disabled")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Config: where your frontend lives and what URL to open
 # Put your index.html (and assets like video.mp4) in ./frontend next to this file
@@ -22,6 +31,10 @@ INDEX_FILE = FRONTEND_DIR / "index.html"
 APP_URL = "http://localhost:8000/"
 AUTO_LAUNCH = True          # set False to disable auto-opening a browser
 KIOSK = True                # True => try Chromium kiosk flags (best for Pi)
+
+# GPIO Configuration
+GPIO_PIN = 5                # GPIO pin number (BCM numbering)
+ACTIVE_DURATION = 5.0       # Duration to keep pin active (seconds)
 # ──────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
@@ -74,6 +87,27 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# GPIO Helper Functions
+async def activate_gpio_pin():
+    """Activate GPIO pin 5 (active low) for ACTIVE_DURATION seconds"""
+    if not GPIO_AVAILABLE:
+        print(f"[GPIO] Would activate pin {GPIO_PIN} for {ACTIVE_DURATION}s (GPIO not available)")
+        return
+    
+    global GPIO_HANDLE
+    if GPIO_HANDLE is None:
+        print("[GPIO] GPIO not initialized")
+        return
+    
+    try:
+        print(f"[GPIO] Activating pin {GPIO_PIN} (active low) for {ACTIVE_DURATION} seconds")
+        lgpio.gpio_write(GPIO_HANDLE, GPIO_PIN, 0)  # Active low signal (0 = LOW)
+        await asyncio.sleep(ACTIVE_DURATION)
+        lgpio.gpio_write(GPIO_HANDLE, GPIO_PIN, 1)  # Return to high (1 = HIGH, inactive)
+        print(f"[GPIO] Pin {GPIO_PIN} deactivated (returned to high)")
+    except Exception as e:
+        print(f"[GPIO] Error controlling pin: {e}")
+
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -81,50 +115,10 @@ async def health():
 class Signal(BaseModel):
     type: str
 
-# ── GPIO (lgpio for Raspberry Pi 5) ───────────────────────────────────────────
-GPIO_ENABLED = False
-GPIO_PIN_BCM = 3            # physical pin 5 == BCM 3
-GPIO_PULSE_SECONDS = 5      # active-low duration
-lgpio = None
-h = None
-
-try:
-    import lgpio as _lgpio
-    lgpio = _lgpio
-    h = lgpio.gpiochip_open(0)  # usually /dev/gpiochip0
-    # Claim as output with initial HIGH (inactive)
-    lgpio.gpio_claim_output(h, GPIO_PIN_BCM, 1)
-    GPIO_ENABLED = True
-    print(f"[GPIO] Initialized with lgpio (BCM {GPIO_PIN_BCM}, phys pin 5). Inactive=HIGH.")
-except Exception as e:
-    print(f"[GPIO] lgpio not available ({e}). Running in mock mode.")
-
-async def pulse_no_thank_you():
-    """
-    Drive pin LOW (active) for GPIO_PULSE_SECONDS, then back HIGH.
-    """
-    if not GPIO_ENABLED or h is None or lgpio is None:
-        print(f"[GPIO] MOCK: 'NoChocolate' → would drive BCM {GPIO_PIN_BCM} LOW for {GPIO_PULSE_SECONDS}s.")
-        await asyncio.sleep(GPIO_PULSE_SECONDS)
-        print(f"[GPIO] MOCK: returned HIGH (inactive).")
-        return
-
-    print(f"[GPIO] 'NoChocolate' → driving BCM {GPIO_PIN_BCM} LOW (active) for {GPIO_PULSE_SECONDS}s.")
-    try:
-        lgpio.gpio_write(h, GPIO_PIN_BCM, 0)   # active LOW
-        await asyncio.sleep(GPIO_PULSE_SECONDS)
-    finally:
-        lgpio.gpio_write(h, GPIO_PIN_BCM, 1)   # back to HIGH
-        print(f"[GPIO] 'NoChocolate' → returned HIGH (inactive).")
-# ──────────────────────────────────────────────────────────────────────────────
-
 @app.post("/signal")
 async def signal(payload: Signal):
     print(f"[API] Received signal request: {payload.type}")
     await manager.broadcast({"type": payload.type})
-    # Trigger GPIO on "NoChocolate"
-    if payload.type == "NoChocolate":
-        asyncio.create_task(pulse_no_thank_you())
     return {"sent": payload.type}
 
 @app.websocket("/ws")
@@ -144,8 +138,8 @@ async def ws_endpoint(websocket: WebSocket):
                 print("Dispensing Chocolate")
             elif mtype == "NoChocolate":
                 print("Moving robot back")
-                # Trigger GPIO pulse asynchronously
-                asyncio.create_task(pulse_no_thank_you())
+                # Trigger GPIO pin 5 active low for 5 seconds
+                asyncio.create_task(activate_gpio_pin())
             elif mtype == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
             else:
@@ -176,10 +170,15 @@ async def input_listener():
         elif cmd == "Y":
             print("[INPUT] Simulating YesChocolate")
             print("Dispensing Chocolate")
+            # Optionally broadcast to FE if you want:
+            # await manager.broadcast({"type": "YesChocolate"})
         elif cmd == "N":
             print("[INPUT] Simulating NoChocolate")
             print("Moving robot back")
-            asyncio.create_task(pulse_no_thank_you())
+            # Trigger GPIO pin 5 active low for 5 seconds
+            asyncio.create_task(activate_gpio_pin())
+            # Optionally broadcast to FE:
+            # await manager.broadcast({"type": "NoChocolate"})
         else:
             print(f"[INPUT] Unknown command: {cmd}")
 
@@ -222,26 +221,53 @@ async def launch_frontend():
     except Exception as e:
         print(f"[LAUNCH] Failed to open browser: {e}")
 
+def setup_gpio():
+    """Initialize GPIO settings"""
+    if not GPIO_AVAILABLE:
+        return
+    
+    global GPIO_HANDLE
+    try:
+        # Open gpiochip0 (default for Raspberry Pi)
+        GPIO_HANDLE = lgpio.gpiochip_open(0)
+        
+        # Set pin as output with initial value HIGH (1 = inactive)
+        lgpio.gpio_claim_output(GPIO_HANDLE, GPIO_PIN, 1)
+        
+        print(f"[GPIO] Pin {GPIO_PIN} configured as output (initially high/inactive)")
+        print(f"[GPIO] Using lgpio with chip handle: {GPIO_HANDLE}")
+    except Exception as e:
+        print(f"[GPIO] Failed to initialize: {e}")
+        GPIO_HANDLE = None
+
+def cleanup_gpio():
+    """Clean up GPIO resources"""
+    global GPIO_HANDLE
+    if GPIO_AVAILABLE and GPIO_HANDLE is not None:
+        try:
+            lgpio.gpiochip_close(GPIO_HANDLE)
+            GPIO_HANDLE = None
+            print("[GPIO] Cleanup complete - chip handle closed")
+        except Exception as e:
+            print(f"[GPIO] Cleanup error: {e}")
+
 @app.on_event("startup")
 async def startup_event():
+    # Initialize GPIO
+    setup_gpio()
     # Start stdin listener and browser launcher
     asyncio.create_task(input_listener())
     asyncio.create_task(launch_frontend())
 
-# ── Cleanup on shutdown ───────────────────────────────────────────────────────
 @app.on_event("shutdown")
 async def shutdown_event():
-    global h, lgpio
-    try:
-        if GPIO_ENABLED and h is not None and lgpio is not None:
-            lgpio.gpio_write(h, GPIO_PIN_BCM, 1)
-            lgpio.gpiochip_close(h)
-            print("[GPIO] Cleaned up lgpio handle.")
-    except Exception as e:
-        print(f"[GPIO] Cleanup error: {e}")
-
-# ──────────────────────────────────────────────────────────────────────────────
+    # Clean up GPIO on shutdown
+    cleanup_gpio()
 
 if __name__ == "__main__":
-    # Run: uvicorn main:app --reload --host 0.0.0.0 --port 8000
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    try:
+        # Run: uvicorn main:app --reload --host 0.0.0.0 --port 8000
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    finally:
+        # Ensure GPIO cleanup even if interrupted
+        cleanup_gpio()

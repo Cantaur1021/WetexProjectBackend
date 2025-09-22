@@ -38,7 +38,7 @@ ACTIVE_DURATION = 5.0       # Duration to keep pin active (seconds)
 
 # Trigger input:
 # You said "pin 28" — treating this as PHYSICAL pin 26 which is BCM 7 on the Pi header.
-TRIGGER_PIN_BCM = 7         # INPUT (BCM numbering) watched for LOW to start dispense
+TRIGGER_PIN_BCM = 26         # INPUT (BCM numbering) watched for LOW to start dispense
 DEBOUNCE_MS = 40            # Require ~40ms stable LOW
 COOLDOWN_MS = 500           # Minimum time after LOW before re-arming
 # ──────────────────────────────────────────────────────────────────────────────
@@ -278,11 +278,11 @@ def setup_gpio():
         # OUTPUT: dispenser line, initial HIGH (inactive)
         lgpio.gpio_claim_output(GPIO_HANDLE, GPIO_PIN, 1)
 
-        # INPUT: trigger pin (physical 28 -> BCM 1), no pull config here (assumes external pull or system pull)
-        lgpio.gpio_claim_input(GPIO_HANDLE, TRIGGER_PIN_BCM)
+        # INPUT: trigger pin (BCM 7, phys pin 26) with internal pull-up
+        lgpio.gpio_claim_input(GPIO_HANDLE, TRIGGER_PIN_BCM, lgpio.SET_PULL_UP)
 
         print(f"[GPIO] Output pin {GPIO_PIN} configured HIGH (inactive)")
-        print(f"[GPIO] Trigger input configured on BCM {TRIGGER_PIN_BCM}")
+        print(f"[GPIO] Trigger input configured on BCM {TRIGGER_PIN_BCM} with internal pull-up")
         print(f"[GPIO] Using lgpio with chip handle: {GPIO_HANDLE}")
     except Exception as e:
         print(f"[GPIO] Failed to initialize: {e}")

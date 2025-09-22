@@ -6,15 +6,14 @@
   <title>SureFlow Host</title>
   <style>
     :root{
-      /* TUNE THESE FOR YOUR LED */
-      --video-bias: 0px;   /* negative = bias crop upward */
-      --ui-raise: 140px;      /* raises UI from the bottom */
-      --page-bg: #e9e9e9;
+      --video-bias: 0px;
+      --ui-raise: 140px;
+      --page-bg: #000;                 /* idle is black now */
       --ui-nudge-down: 120px;
       --sf-blue:#2f6db2;
       --sf-blue-2:#3b82f6;
       --sf-green:#33b071;
-      --text:#0e1726;
+      --text:#e5e7eb;                  /* brighter on black */
       --ring:rgba(47,109,178,.25);
     }
     *{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
@@ -25,14 +24,14 @@
       background:var(--page-bg);
     }
 
-    /* Background video fills stage; bias the crop upward with object-position */
     .bg-video{
       position:absolute; inset:0;
       width:1080px; height:1080px;
       object-fit:cover;
       object-position:center center;
       z-index:0; pointer-events:none;
-      background:var(--page-bg);
+      display:none;                    /* hidden while idle (black) */
+      background:#000;
     }
 
     .ui-overlay{
@@ -41,59 +40,31 @@
       display:flex; flex-direction:column; align-items:center; justify-content:center;
     }
 
-    /* No welcome header */
-    .greeting-container{display:none;}
-
-    .question-container{
-      position:absolute; left:50%; transform:translateX(-50%);
-      bottom: calc(160px + var(--ui-raise) - var(--ui-nudge-down));
-      width:85%; text-align:center;
-      opacity:0; transition:opacity .35s ease, transform .35s ease;
-      pointer-events:auto;
-    }
-    .question-container.active{opacity:1; transform:translateX(-50%)}
-    .question-text{color:var(--text); font-size:42px; font-weight:300; margin-bottom:36px; letter-spacing:.2px}
-
-    .options{display:flex; gap:24px; justify-content:center}
-
-    .btn{
-      pointer-events:auto; border-radius:999px; padding:24px 50px;
-      font-size:28px; font-weight:500; letter-spacing:.2px;
-      transition:transform .15s ease, box-shadow .2s ease, background .2s ease, color .2s ease, border-color .2s ease;
-      border:1.5px solid transparent; box-shadow:0 2px 10px rgba(17,24,39,0.06); will-change:transform;
-    }
-    .btn:active{transform:translateY(1px)}
-    .btn-primary{background:var(--sf-blue); color:#fff; border-color:var(--sf-blue)}
-    .btn-primary:hover{background:var(--sf-blue-2); border-color:var(--sf-blue-2); box-shadow:0 8px 24px rgba(59,130,246,.28)}
-    .btn-primary:focus-visible{outline:4px solid var(--ring)}
-    .btn-secondary{background:#fff; color:var(--text); border-color:#e6e9ef}
-    .btn-secondary:hover{border-color:#cfd6e3; box-shadow:0 8px 24px rgba(17,24,39,.08); background:#f9fafb}
-    .btn-secondary:focus-visible{outline:4px solid var(--ring)}
+    /* Removed question UI entirely */
 
     .message-display{
       position:absolute; left:50%; transform:translateX(-50%) scale(.98);
       bottom: calc(100px + var(--ui-raise));
-      background:#ffffffcc; border:1px solid #e8eef6; border-radius:16px;
+      background:#0b1220cc; border:1px solid #1e293b; border-radius:16px;
       padding:28px 36px; width:80%; max-width:720px; text-align:center;
       backdrop-filter:blur(12px);
       opacity:0; transition:opacity .3s ease, transform .3s ease;
-      box-shadow:0 8px 30px rgba(17,24,39,.06);
+      box-shadow:0 8px 30px rgba(17,24,39,.25);
     }
     .message-display.active{opacity:1; transform:translateX(-50%) scale(1)}
     .message-text{color:var(--text); font-size:26px; font-weight:300; line-height:1.5; letter-spacing:.2px}
-    .message-text .highlight{color:var(--sf-blue); font-weight:500}
+    .message-text .highlight{color:#fff; font-weight:500}
 
     .hidden-exit{position:absolute; top:10px; right:10px; width:50px; height:50px; opacity:0; cursor:pointer; z-index:9999}
   </style>
 </head>
 <body>
-  <!-- Background video -->
+  <!-- Background video (idle hidden, shown only during dispense) -->
   <video
     id="bgVideo"
     class="bg-video"
     src="/static/video/video.webm"
     muted
-    autoplay
     preload="auto"
     playsinline
   ></video>
@@ -101,147 +72,66 @@
   <div class="hidden-exit" onclick="window.close()"></div>
 
   <div class="ui-overlay">
-    <!-- Chocolate question -->
-    <div class="question-container" id="chocoContainer" style="pointer-events:auto;">
-      <div class="question-text">Do you want chocolate?</div>
-      <div class="options">
-        <button class="btn btn-primary" id="btnYes">Yes</button>
-        <button class="btn btn-secondary" id="btnNo">No</button>
-      </div>
-    </div>
-
-    <!-- Messages -->
+    <!-- Messages (same position as before) -->
     <div class="message-display" id="messageDisplay">
       <div class="message-text" id="messageText"></div>
     </div>
   </div>
 
   <script>
-    /* ---------- Elements + state ---------- */
-    const chocoContainer = document.getElementById('chocoContainer');
-    const btnYes = document.getElementById('btnYes');
-    const btnNo  = document.getElementById('btnNo');
     const messageDisplay = document.getElementById('messageDisplay');
     const messageText = document.getElementById('messageText');
     const bgVideo = document.getElementById('bgVideo');
 
-    let appState = 'welcome'; // 'welcome' | 'choco' | 'dispensing' | 'seeYou'
+    let appState = 'idle'; // 'idle' | 'dispensing' | 'post'
     let timers = [];
     let ws, wsReady = false, wsRetryTimer;
 
-    // <<< configure pause duration between loops (in ms)
-    const LOOP_PAUSE_MS = 10000;
+    function show(el){ el.classList.add('active'); }
+    function hide(el){ el.classList.remove('active'); }
+    function clearTimers(){ timers.forEach(t=>clearTimeout(t)); timers=[]; }
 
-    // Internals for loop-with-pause control
-    let loopEndedHandler = null;
-    let loopPauseTimer = null;
-
-    function show(el){el.classList.add('active');}
-    function hide(el){el.classList.remove('active');}
-    function clearTimers(){timers.forEach(t=>clearTimeout(t)); timers=[];}
-
-    /* ---------- Video behavior ---------- */
-
-    // Clear any custom handlers/timers we attach to the video
-    function clearVideoHandlers(){
-      if (loopEndedHandler && bgVideo) {
-        bgVideo.removeEventListener('ended', loopEndedHandler);
-        loopEndedHandler = null;
-      }
-      if (loopPauseTimer){
-        clearTimeout(loopPauseTimer);
-        loopPauseTimer = null;
-      }
-    }
-
-    // Standby behavior: loop the video, but pause on the last frame for LOOP_PAUSE_MS, then restart
-    function startLoopingWithPause(){
-      if (!bgVideo) return;
-      clearVideoHandlers();
-      // We need 'ended' to fire, so do NOT set .loop = true
-      bgVideo.loop = false;
-      bgVideo.muted = true;
-      try { bgVideo.currentTime = 0; } catch {}
-      // Handler runs each time a loop finishes
-      loopEndedHandler = () => {
-        if (appState !== 'welcome') return; // ignore if state changed mid-loop
-        bgVideo.pause(); // hold on final frame
-        loopPauseTimer = setTimeout(() => {
-          if (appState !== 'welcome') return;
-          try { bgVideo.currentTime = 0; } catch {}
-          bgVideo.play().catch(()=>{});
-        }, LOOP_PAUSE_MS);
-      };
-      bgVideo.addEventListener('ended', loopEndedHandler);
-      bgVideo.play().catch(()=>{});
-    }
-
-    // Play the video once and stop at the last frame (used when entering question)
-    function playOnceAndHold(){
-      if (!bgVideo) return;
-      clearVideoHandlers(); // <<< important: don't keep standby handler
-      bgVideo.loop = false;
-      try { bgVideo.currentTime = 0; } catch {}
-      const onEnded = () => { bgVideo.pause(); bgVideo.removeEventListener('ended', onEnded); };
-      bgVideo.addEventListener('ended', onEnded);
-      bgVideo.play().catch(()=>{});
-    }
-
-    // Resume smooth looping without pause (used during/after interactions)
-    function resumeLoopingVideo(){
-      if (!bgVideo) return;
-      clearVideoHandlers(); // <<< switch to normal loop
-      bgVideo.loop = true;
-      bgVideo.play().catch(()=>{});
-    }
-
-    /* ---------- Flow ---------- */
-    function resetToWelcome(){
+    function toIdle(){
       clearTimers();
-      appState = 'welcome';
+      appState = 'idle';
       hide(messageDisplay);
-      hide(chocoContainer);
-      startLoopingWithPause(); // <<< standby behavior with pause
+      if (bgVideo){
+        bgVideo.pause();
+        bgVideo.currentTime = 0;
+        bgVideo.style.display = 'none'; // black screen
+      }
     }
 
-    function proceedToChocolateQuestion(){
-      playOnceAndHold();
-      hide(messageDisplay);
-      setTimeout(()=>{ show(chocoContainer); appState='choco'; }, 200);
-    }
-
-    function handleChocolateYes(){
-      wsSend({ type:'YesChocolate' });
-      hide(chocoContainer);
-      messageText.innerHTML = `Dispensing <span class="highlight">Chocolate</span>...`;
+    function startDispenseFlow(){
+      // Set message immediately (same position as before)
+      messageText.innerHTML = `Heres a chocolate, <span class="highlight">thank you for visiting</span>`;
       show(messageDisplay);
-      appState='dispensing';
-      timers.push(setTimeout(()=>{
-        messageText.textContent = 'Thank you for visiting us!';
-        timers.push(setTimeout(()=>{
-          wsSend({ type:'NoChocolate' });
-          resumeLoopingVideo();
-          hide(messageDisplay);
-          setTimeout(resetToWelcome, 500);
-        }, 3000));
-      }, 10000));
-    }
 
-    function handleChocolateNo(){
-      wsSend({ type:'NoChocolate' });
-      hide(chocoContainer);
-      messageText.textContent = 'See you!';
-      show(messageDisplay);
-      appState='seeYou';
-      timers.push(setTimeout(()=>{
-        resumeLoopingVideo();
-        hide(messageDisplay);
-        setTimeout(resetToWelcome, 500);
-      }, 2000));
+      // Show video and play once
+      if (bgVideo){
+        bgVideo.style.display = 'block';
+        try { bgVideo.currentTime = 0; } catch {}
+        bgVideo.loop = false;
+
+        const onEnded = () => {
+          bgVideo.removeEventListener('ended', onEnded);
+          // Video finished -> chocolate dispensed
+          wsSend({ type:'NoChocolate' }); // triggers robot moving back & GPIO on backend
+
+          // Keep the thank-you text for 10s, then back to idle (black)
+          timers.push(setTimeout(() => {
+            toIdle();
+          }, 10000));
+        };
+
+        bgVideo.addEventListener('ended', onEnded);
+        bgVideo.play().catch(()=>{ /* ignore autoplay errors; kiosk flags should cover */ });
+      }
+
+      appState = 'dispensing';
     }
 
     /* ---------- WebSocket ---------- */
-    // Build WS URL dynamically so it works on localhost or over the network
     const BACKEND_WS_URL =
       (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
 
@@ -254,8 +144,9 @@
         ws.addEventListener('message', (evt)=>{
           try{
             const data = JSON.parse(evt.data);
-            if (data.type === 'GreetingTransition' && appState === 'welcome') {
-              proceedToChocolateQuestion();
+            // Accept either the new 'StartDispense' or legacy 'GreetingTransition'
+            if ((data.type === 'StartDispense' || data.type === 'GreetingTransition') && appState === 'idle') {
+              startDispenseFlow();
             }
           }catch{}
         });
@@ -267,14 +158,11 @@
       if (wsReady && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     }
 
-    /* ---------- Wire + boot ---------- */
-    btnYes.addEventListener('click', handleChocolateYes);
-    btnNo .addEventListener('click', handleChocolateNo);
-
-    resetToWelcome();
+    // Boot
+    toIdle();
     initWS();
 
-    // Autoplay fallback: if initial play() was blocked, try when ready
+    // Try to recover play if the browser blocked it
     function tryPlay() { bgVideo && bgVideo.play().catch(()=>{}); }
     bgVideo && bgVideo.addEventListener('canplay', tryPlay, { once:true });
     bgVideo && bgVideo.addEventListener('loadeddata', tryPlay, { once:true });

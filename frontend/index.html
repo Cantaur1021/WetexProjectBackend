@@ -30,7 +30,7 @@
       object-fit:cover;
       object-position:center center;
       z-index:0; pointer-events:none;
-      display:none;                    /* JS shows this during idle loop */
+      display:block;                  /* visible during idle */
       background:#000;
     }
 
@@ -57,7 +57,7 @@
   </style>
 </head>
 <body>
-  <!-- Background video (idle shown, loops with pause between loops) -->
+  <!-- Background video -->
   <video
     id="bgVideo"
     class="bg-video"
@@ -70,7 +70,7 @@
   <div class="hidden-exit" onclick="window.close()"></div>
 
   <div class="ui-overlay">
-    <!-- Messages (same position as before) -->
+    <!-- Message (same position as before) -->
     <div class="message-display" id="messageDisplay">
       <div class="message-text" id="messageText"></div>
     </div>
@@ -85,10 +85,10 @@
     let timers = [];
     let ws, wsReady = false, wsRetryTimer;
 
-    // <<< pause between idle loops (ms)
-    const LOOP_PAUSE_MS = 5000;
+    // Idle loop pause between loops (ms)
+    const LOOP_PAUSE_MS = 10000;
 
-    // <<< internals for idle loop-with-pause
+    // Internals for idle loop-with-pause
     let loopEndedHandler = null;
     let loopPauseTimer = null;
 
@@ -96,7 +96,6 @@
     function hide(el){ el.classList.remove('active'); }
     function clearTimers(){ timers.forEach(t=>clearTimeout(t)); timers=[]; }
 
-    // <<< clear any idle handlers/timers
     function clearVideoHandlers(){
       if (loopEndedHandler && bgVideo) {
         bgVideo.removeEventListener('ended', loopEndedHandler);
@@ -108,11 +107,10 @@
       }
     }
 
-    // <<< idle behavior: play once, pause on last frame for LOOP_PAUSE_MS, repeat
+    // Idle behavior: play once, pause on last frame for LOOP_PAUSE_MS, repeat
     function startLoopingWithPause(){
       if (!bgVideo) return;
       clearVideoHandlers();
-      bgVideo.style.display = 'block';
       bgVideo.loop = false;
       try { bgVideo.currentTime = 0; } catch {}
       loopEndedHandler = () => {
@@ -132,39 +130,69 @@
       clearTimers();
       appState = 'idle';
       hide(messageDisplay);
-      startLoopingWithPause(); // <<< show video and run loop-with-pause
+      startLoopingWithPause();
+    }
+
+    // Pause at the last frame immediately (regardless of current position)
+    function pauseAtFinalFrameThen(callback){
+      if (!bgVideo) { callback && callback(); return; }
+      const EPS = 0.04; // seconds before end to reliably land a frame
+
+      // Stop idle loop from restarting mid-seek
+      clearVideoHandlers();
+      bgVideo.loop = false;
+
+      const seekToEnd = () => {
+        const dur = bgVideo.duration;
+        if (!isFinite(dur) || isNaN(dur) || dur <= 0) {
+          bgVideo.pause();
+          callback && callback();
+          return;
+        }
+        const target = Math.max(dur - EPS, 0);
+        const onSeeked = () => {
+          bgVideo.removeEventListener('seeked', onSeeked);
+          try { bgVideo.pause(); } catch {}
+          callback && callback();
+        };
+        bgVideo.addEventListener('seeked', onSeeked, { once: true });
+        try { bgVideo.currentTime = target; } catch {
+          bgVideo.pause();
+          callback && callback();
+        }
+      };
+
+      if (isFinite(bgVideo.duration) && !isNaN(bgVideo.duration) && bgVideo.duration > 0) {
+        seekToEnd();
+      } else {
+        const onMeta = () => {
+          bgVideo.removeEventListener('loadedmetadata', onMeta);
+          seekToEnd();
+        };
+        bgVideo.addEventListener('loadedmetadata', onMeta, { once: true });
+        // Nudge load, then pause
+        try { bgVideo.play().then(()=>{ bgVideo.pause(); }).catch(()=>{}); } catch {}
+      }
     }
 
     function startDispenseFlow(){
-      // Stop idle loop-with-pause for a clean, single play
-      clearVideoHandlers();
+      if (appState !== 'idle') return;   // prevent re-entry
+      appState = 'dispensing';
 
-      // Message (same position)
+      // Show thank-you message (same position as before)
       messageText.innerHTML = `Here's a chocolate, <span class="highlight">thank you for visiting!</span>`;
       show(messageDisplay);
 
-      // Show video and play once
-      if (bgVideo){
-        bgVideo.style.display = 'block';
-        try { bgVideo.currentTime = 0; } catch {}
-        bgVideo.loop = false;
+      // Immediately jump to final frame and pause
+      pauseAtFinalFrameThen(() => {
+        // Inform backend right away that we're at the end-of-flow
+        wsSend({ type:'NoChocolate' });
 
-        const onEnded = () => {
-          bgVideo.removeEventListener('ended', onEnded);
-          // Video finished -> chocolate dispensed
-          wsSend({ type:'NoChocolate' }); // triggers robot moving back & GPIO on backend
-
-          // Keep the thank-you text for 10s, then back to idle loop-with-pause
-          timers.push(setTimeout(() => {
-            toIdle();
-          }, 10000));
-        };
-
-        bgVideo.addEventListener('ended', onEnded);
-        bgVideo.play().catch(()=>{ /* kiosk flags should allow autoplay */ });
-      }
-
-      appState = 'dispensing';
+        // Keep the message up for 10s, then return to idle loop-with-pause
+        timers.push(setTimeout(() => {
+          toIdle();
+        }, 10000));
+      });
     }
 
     /* ---------- WebSocket ---------- */
@@ -194,11 +222,11 @@
       if (wsReady && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     }
 
-    // Boot
+    // Boot: idle video loop-with-pause
     toIdle();
     initWS();
 
-    // Try to recover play if the browser blocked it
+    // In case autoplay gets cranky
     function tryPlay() { bgVideo && bgVideo.play().catch(()=>{}); }
     bgVideo && bgVideo.addEventListener('canplay', tryPlay, { once:true });
     bgVideo && bgVideo.addEventListener('loadeddata', tryPlay, { once:true });

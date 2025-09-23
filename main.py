@@ -32,13 +32,9 @@ APP_URL = "http://localhost:8000/"
 AUTO_LAUNCH = True          # set False to disable auto-opening a browser
 KIOSK = True                # True => try Chromium kiosk flags (best for Pi)
 
-# GPIO Configuration
-GPIO_PIN = 5                # OUTPUT (BCM numbering) for active-low pulse (your dispenser line)
-ACTIVE_DURATION = 5.0       # Duration to keep pin active (seconds)
-
 # Trigger input:
-# You said "pin 28" — treating this as PHYSICAL pin 26 which is BCM 7 on the Pi header.
-TRIGGER_PIN_BCM = 26         # INPUT (BCM numbering) watched for LOW to start dispense
+# Physical pin 26 = BCM 7
+TRIGGER_PIN_BCM = 7         # INPUT (BCM numbering) watched for LOW to start dispense
 DEBOUNCE_MS = 40            # Require ~40ms stable LOW
 COOLDOWN_MS = 500           # Minimum time after LOW before re-arming
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,27 +88,6 @@ class ConnectionManager:
             self.disconnect(ws)
 
 manager = ConnectionManager()
-
-# GPIO Helper Functions
-async def activate_gpio_pin():
-    """Activate GPIO_PIN (active low) for ACTIVE_DURATION seconds"""
-    if not GPIO_AVAILABLE:
-        print(f"[GPIO] Would activate pin {GPIO_PIN} for {ACTIVE_DURATION}s (GPIO not available)")
-        return
-    
-    global GPIO_HANDLE
-    if GPIO_HANDLE is None:
-        print("[GPIO] GPIO not initialized")
-        return
-    
-    try:
-        print(f"[GPIO] Activating pin {GPIO_PIN} (active low) for {ACTIVE_DURATION} seconds")
-        lgpio.gpio_write(GPIO_HANDLE, GPIO_PIN, 0)  # Active low
-        await asyncio.sleep(ACTIVE_DURATION)
-        lgpio.gpio_write(GPIO_HANDLE, GPIO_PIN, 1)  # Inactive high
-        print(f"[GPIO] Pin {GPIO_PIN} deactivated (returned to high)")
-    except Exception as e:
-        print(f"[GPIO] Error controlling pin: {e}")
 
 async def monitor_trigger_pin():
     """
@@ -200,8 +175,7 @@ async def ws_endpoint(websocket: WebSocket):
                 print("Dispensing Chocolate")
             elif mtype == "NoChocolate":
                 print("Moving robot back")
-                # Trigger GPIO active low for ACTIVE_DURATION seconds
-                asyncio.create_task(activate_gpio_pin())
+                # (No GPIO pulse here anymore — removed per request)
             elif mtype == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
             else:
@@ -209,14 +183,16 @@ async def ws_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# ---------- Cross-platform stdin listener (works on Windows) ----------
-# Left in place but no longer needed for 'A' trigger; the trigger is now the input pin.
+# ---------- Keyboard override ----------
 async def input_listener():
+    """
+    Press 'A' + Enter to broadcast StartDispense to the frontend.
+    """
     if not sys.stdin or not sys.stdin.isatty():
         print("[INPUT] Stdin not interactive; input listener disabled.")
         return
 
-    print("[INPUT] Type 'N' + Enter to simulate NoChocolate (GPIO pulse).")
+    print("[INPUT] Type 'A' + Enter to trigger StartDispense (keyboard override).")
 
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -224,10 +200,9 @@ async def input_listener():
             await asyncio.sleep(0.1)
             continue
         cmd = line.strip().upper()
-        if cmd == "N":
-            print("[INPUT] Simulating NoChocolate")
-            print("Moving robot back")
-            asyncio.create_task(activate_gpio_pin())
+        if cmd == "A":
+            print("[INPUT] Keyboard override: Broadcasting StartDispense")
+            await manager.broadcast({"type": "StartDispense"})
         else:
             print(f"[INPUT] Unknown command: {cmd}")
 
@@ -274,14 +249,10 @@ def setup_gpio():
     try:
         # Open gpiochip0 (default for Raspberry Pi)
         GPIO_HANDLE = lgpio.gpiochip_open(0)
-        
-        # OUTPUT: dispenser line, initial HIGH (inactive)
-        lgpio.gpio_claim_output(GPIO_HANDLE, GPIO_PIN, 1)
 
         # INPUT: trigger pin (BCM 7, phys pin 26) with internal pull-up
         lgpio.gpio_claim_input(GPIO_HANDLE, TRIGGER_PIN_BCM, lgpio.SET_PULL_UP)
 
-        print(f"[GPIO] Output pin {GPIO_PIN} configured HIGH (inactive)")
         print(f"[GPIO] Trigger input configured on BCM {TRIGGER_PIN_BCM} with internal pull-up")
         print(f"[GPIO] Using lgpio with chip handle: {GPIO_HANDLE}")
     except Exception as e:
@@ -303,9 +274,9 @@ def cleanup_gpio():
 async def startup_event():
     setup_gpio()
     # Start listeners
-    asyncio.create_task(input_listener())          # optional helper
+    asyncio.create_task(input_listener())          # 'A' to StartDispense
     asyncio.create_task(launch_frontend())
-    asyncio.create_task(monitor_trigger_pin())     # <-- NEW: auto StartDispense on pin LOW
+    asyncio.create_task(monitor_trigger_pin())     # auto StartDispense on pin LOW
 
 @app.on_event("shutdown")
 async def shutdown_event():

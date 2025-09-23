@@ -8,7 +8,7 @@
     :root{
       --video-bias: 0px;
       --ui-raise: 140px;
-      --page-bg: #000;                 /* idle is black now */
+      --page-bg: #000;                 /* background remains black */
       --ui-nudge-down: 120px;
       --sf-blue:#2f6db2;
       --sf-blue-2:#3b82f6;
@@ -30,7 +30,7 @@
       object-fit:cover;
       object-position:center center;
       z-index:0; pointer-events:none;
-      display:none;                    /* hidden while idle (black) */
+      display:none;                    /* JS shows this during idle loop */
       background:#000;
     }
 
@@ -39,8 +39,6 @@
       pointer-events:none;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
     }
-
-    /* Removed question UI entirely */
 
     .message-display{
       position:absolute; left:50%; transform:translateX(-50%) scale(.98);
@@ -59,7 +57,7 @@
   </style>
 </head>
 <body>
-  <!-- Background video (idle hidden, shown only during dispense) -->
+  <!-- Background video (idle shown, loops with pause between loops) -->
   <video
     id="bgVideo"
     class="bg-video"
@@ -83,27 +81,65 @@
     const messageText = document.getElementById('messageText');
     const bgVideo = document.getElementById('bgVideo');
 
-    let appState = 'idle'; // 'idle' | 'dispensing' | 'post'
+    let appState = 'idle'; // 'idle' | 'dispensing'
     let timers = [];
     let ws, wsReady = false, wsRetryTimer;
+
+    // <<< pause between idle loops (ms)
+    const LOOP_PAUSE_MS = 5000;
+
+    // <<< internals for idle loop-with-pause
+    let loopEndedHandler = null;
+    let loopPauseTimer = null;
 
     function show(el){ el.classList.add('active'); }
     function hide(el){ el.classList.remove('active'); }
     function clearTimers(){ timers.forEach(t=>clearTimeout(t)); timers=[]; }
 
+    // <<< clear any idle handlers/timers
+    function clearVideoHandlers(){
+      if (loopEndedHandler && bgVideo) {
+        bgVideo.removeEventListener('ended', loopEndedHandler);
+        loopEndedHandler = null;
+      }
+      if (loopPauseTimer){
+        clearTimeout(loopPauseTimer);
+        loopPauseTimer = null;
+      }
+    }
+
+    // <<< idle behavior: play once, pause on last frame for LOOP_PAUSE_MS, repeat
+    function startLoopingWithPause(){
+      if (!bgVideo) return;
+      clearVideoHandlers();
+      bgVideo.style.display = 'block';
+      bgVideo.loop = false;
+      try { bgVideo.currentTime = 0; } catch {}
+      loopEndedHandler = () => {
+        if (appState !== 'idle') return;
+        bgVideo.pause(); // hold final frame
+        loopPauseTimer = setTimeout(() => {
+          if (appState !== 'idle') return;
+          try { bgVideo.currentTime = 0; } catch {}
+          bgVideo.play().catch(()=>{});
+        }, LOOP_PAUSE_MS);
+      };
+      bgVideo.addEventListener('ended', loopEndedHandler);
+      bgVideo.play().catch(()=>{});
+    }
+
     function toIdle(){
       clearTimers();
       appState = 'idle';
       hide(messageDisplay);
-      if (bgVideo){
-        bgVideo.pause();
-        bgVideo.currentTime = 0;
-        bgVideo.style.display = 'none'; // black screen
-      }
+      startLoopingWithPause(); // <<< show video and run loop-with-pause
     }
 
     function startDispenseFlow(){
-      // Set message immediately (same position as before)
+      // Stop idle loop-with-pause for a clean, single play
+      clearVideoHandlers();
+
+      // Message (same position)
       messageText.innerHTML = `Here's a chocolate, <span class="highlight">thank you for visiting!</span>`;
       show(messageDisplay);
 
@@ -118,14 +154,14 @@
           // Video finished -> chocolate dispensed
           wsSend({ type:'NoChocolate' }); // triggers robot moving back & GPIO on backend
 
-          // Keep the thank-you text for 10s, then back to idle (black)
+          // Keep the thank-you text for 10s, then back to idle loop-with-pause
           timers.push(setTimeout(() => {
             toIdle();
           }, 10000));
         };
 
         bgVideo.addEventListener('ended', onEnded);
-        bgVideo.play().catch(()=>{ /* ignore autoplay errors; kiosk flags should cover */ });
+        bgVideo.play().catch(()=>{ /* kiosk flags should allow autoplay */ });
       }
 
       appState = 'dispensing';

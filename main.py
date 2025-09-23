@@ -21,7 +21,6 @@ try:
     GPIO_HANDLE = None  # Will store the chip handle
 except ImportError:
     GPIO_AVAILABLE = False
-    print("[GPIO] lgpio not available - GPIO functionality disabled")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config: where your frontend lives and what URL to open
@@ -34,7 +33,7 @@ KIOSK = True                # True => try Chromium kiosk flags (best for Pi)
 
 # Trigger input:
 # Physical pin 26 = BCM 7
-TRIGGER_PIN_BCM = 7         # INPUT (BCM numbering) watched for LOW to start dispense
+TRIGGER_PIN_BCM = 26         # INPUT (BCM numbering) watched for LOW to start dispense
 DEBOUNCE_MS = 40            # Require ~40ms stable LOW
 COOLDOWN_MS = 500           # Minimum time after LOW before re-arming
 # ──────────────────────────────────────────────────────────────────────────────
@@ -69,12 +68,10 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"[WS] Client connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        print(f"[WS] Client disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
         dead = []
@@ -82,7 +79,6 @@ class ConnectionManager:
             try:
                 await ws.send_text(json.dumps(message))
             except Exception as e:
-                print(f"[WS] Broadcast failed: {e}")
                 dead.append(ws)
         for ws in dead:
             self.disconnect(ws)
@@ -95,26 +91,22 @@ async def monitor_trigger_pin():
     On valid trigger, broadcast StartDispense to all clients.
     """
     if not GPIO_AVAILABLE:
-        print("[GPIO] Trigger monitor disabled (lgpio not available).")
         return
     global GPIO_HANDLE
     if GPIO_HANDLE is None:
-        print("[GPIO] Trigger monitor disabled (GPIO not initialized).")
         return
 
-    print(f"[GPIO] Monitoring trigger on BCM {TRIGGER_PIN_BCM} (active-low).")
     # Initial state
     try:
         last = lgpio.gpio_read(GPIO_HANDLE, TRIGGER_PIN_BCM)
     except Exception as e:
-        print(f"[GPIO] Unable to read trigger pin: {e}")
+        #(f"[GPIO] Unable to read trigger pin: {e}")
         return
 
     while True:
         try:
             cur = lgpio.gpio_read(GPIO_HANDLE, TRIGGER_PIN_BCM)
         except Exception as e:
-            print(f"[GPIO] Read error on trigger pin: {e}")
             await asyncio.sleep(0.1)
             continue
 
@@ -125,11 +117,9 @@ async def monitor_trigger_pin():
             try:
                 stable = lgpio.gpio_read(GPIO_HANDLE, TRIGGER_PIN_BCM)
             except Exception as e:
-                print(f"[GPIO] Read error (debounce): {e}")
                 stable = 1
 
             if stable == 0:
-                print(f"[GPIO] Trigger detected on BCM {TRIGGER_PIN_BCM} (LOW). Broadcasting StartDispense.")
                 await manager.broadcast({"type": "StartDispense"})
                 # Wait for release to HIGH
                 while True:
@@ -154,7 +144,6 @@ class Signal(BaseModel):
 
 @app.post("/signal")
 async def signal(payload: Signal):
-    print(f"[API] Received signal request: {payload.type}")
     await manager.broadcast({"type": payload.type})
     return {"sent": payload.type}
 
@@ -172,14 +161,14 @@ async def ws_endpoint(websocket: WebSocket):
 
             # FRONTEND → BACKEND signals
             if mtype == "YesChocolate":
-                print("Dispensing Chocolate")
+                pass
+                ##("Dispensing Chocolate")
             elif mtype == "NoChocolate":
-                print("Moving robot back")
+                pass
+                #rint("Moving robot back")
                 # (No GPIO pulse here anymore — removed per request)
             elif mtype == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
-            else:
-                print(f"[WS] Unknown message: {mtype}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
@@ -189,10 +178,10 @@ async def input_listener():
     Press 'A' + Enter to broadcast StartDispense to the frontend.
     """
     if not sys.stdin or not sys.stdin.isatty():
-        print("[INPUT] Stdin not interactive; input listener disabled.")
+       # #("[INPUT] Stdin not interactive; input listener disabled.")
         return
 
-    print("[INPUT] Type 'A' + Enter to trigger StartDispense (keyboard override).")
+    # #("[INPUT] Type 'A' + Enter to trigger StartDispense (keyboard override).")
 
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -201,10 +190,11 @@ async def input_listener():
             continue
         cmd = line.strip().upper()
         if cmd == "A":
-            print("[INPUT] Keyboard override: Broadcasting StartDispense")
+            # #("[INPUT] Keyboard override: Broadcasting StartDispense")
             await manager.broadcast({"type": "StartDispense"})
         else:
-            print(f"[INPUT] Unknown command: {cmd}")
+            pass
+            # #(f"[INPUT] Unknown command: {cmd}")
 
 # ---------- Launch the frontend in a browser/kiosk ----------
 def _find_browser_cmd():
@@ -232,13 +222,14 @@ async def launch_frontend():
     cmd = _find_browser_cmd()
     try:
         if cmd:
-            print(f"[LAUNCH] Starting browser: {' '.join(cmd)}")
+            #(f"[LAUNCH] Starting browser: {' '.join(cmd)}")
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            print("[LAUNCH] Chromium not found; opening default browser.")
+            #("[LAUNCH] Chromium not found; opening default browser.")
             webbrowser.open(APP_URL, new=1, autoraise=True)
     except Exception as e:
-        print(f"[LAUNCH] Failed to open browser: {e}")
+        #(f"[LAUNCH] Failed to open browser: {e}")
+        pass
 
 def setup_gpio():
     """Initialize GPIO settings"""
@@ -253,10 +244,10 @@ def setup_gpio():
         # INPUT: trigger pin (BCM 7, phys pin 26) with internal pull-up
         lgpio.gpio_claim_input(GPIO_HANDLE, TRIGGER_PIN_BCM, lgpio.SET_PULL_UP)
 
-        print(f"[GPIO] Trigger input configured on BCM {TRIGGER_PIN_BCM} with internal pull-up")
-        print(f"[GPIO] Using lgpio with chip handle: {GPIO_HANDLE}")
+        #(f"[GPIO] Trigger input configured on BCM {TRIGGER_PIN_BCM} with internal pull-up")
+        #(f"[GPIO] Using lgpio with chip handle: {GPIO_HANDLE}")
     except Exception as e:
-        print(f"[GPIO] Failed to initialize: {e}")
+        #(f"[GPIO] Failed to initialize: {e}")
         GPIO_HANDLE = None
 
 def cleanup_gpio():
@@ -266,9 +257,10 @@ def cleanup_gpio():
         try:
             lgpio.gpiochip_close(GPIO_HANDLE)
             GPIO_HANDLE = None
-            print("[GPIO] Cleanup complete - chip handle closed")
+            #("[GPIO] Cleanup complete - chip handle closed")
         except Exception as e:
-            print(f"[GPIO] Cleanup error: {e}")
+            #(f"[GPIO] Cleanup error: {e}")
+            pass
 
 @app.on_event("startup")
 async def startup_event():
